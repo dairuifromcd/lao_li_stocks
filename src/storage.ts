@@ -1,5 +1,6 @@
-import type { AppState, MarketDataMap } from './types';
+import type { AppState, Candle, MarketDataMap, MarketDataRecord } from './types';
 import { createDefaultState, sanitizeState } from './strategy';
+import { normalizeTicker } from './utils';
 
 const STATE_KEY = 'lao-li-stocks:v1:state';
 const API_KEY = 'lao-li-stocks:v1:alpha-vantage-key';
@@ -40,7 +41,22 @@ export function clearApiKey(): void {
 }
 
 export function loadMarketCache(): MarketDataMap {
-  return readJson<MarketDataMap>(MARKET_CACHE_KEY) ?? {};
+  const parsed = readJson<Record<string, unknown>>(MARKET_CACHE_KEY);
+  if (!parsed) {
+    return {};
+  }
+
+  return Object.entries(parsed).reduce<MarketDataMap>((cache, [rawSymbol, value]) => {
+    if (!isMarketDataRecord(value)) {
+      return cache;
+    }
+
+    const symbol = normalizeTicker(value.symbol || rawSymbol);
+    if (symbol) {
+      cache[symbol] = { ...value, symbol };
+    }
+    return cache;
+  }, {});
 }
 
 export function saveMarketCache(cache: MarketDataMap): void {
@@ -58,4 +74,35 @@ function readJson<T>(key: string): T | null {
 
 function writeJson<T>(key: string, value: T): void {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function isMarketDataRecord(value: unknown): value is MarketDataRecord {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Partial<MarketDataRecord>;
+  return (
+    (record.source === 'alpha-vantage' || record.source === 'cache') &&
+    typeof record.symbol === 'string' &&
+    typeof record.refreshedAt === 'string' &&
+    typeof record.tradingDate === 'string' &&
+    Array.isArray(record.candles) &&
+    record.candles.length > 0 &&
+    record.candles.every(isCandle)
+  );
+}
+
+function isCandle(value: unknown): value is Candle {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candle = value as Partial<Candle>;
+  return (
+    typeof candle.date === 'string' &&
+    [candle.open, candle.high, candle.low, candle.close, candle.volume].every(
+      (numberValue) => typeof numberValue === 'number' && Number.isFinite(numberValue),
+    )
+  );
 }

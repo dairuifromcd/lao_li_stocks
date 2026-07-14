@@ -2,6 +2,24 @@ export type StockStatus = 'active' | 'sealed' | 'no_action';
 
 export type RecommendationAction = 'entry' | 'add_watch' | 'hold' | 'trim_watch';
 
+export type ObservationLevelKind = 'low' | 'deep' | 'pressure';
+
+export type ObservationTimeframe = 'daily' | 'weekly';
+
+export type ObservationLevelSource = 'manual' | 'automatic';
+
+export interface ManualObservationLevel {
+  price: number;
+  basis: string;
+  timeframe: ObservationTimeframe;
+  invalidationPrice?: number;
+  confirmedAt?: string;
+}
+
+export type ManualObservationLevels = Partial<
+  Record<ObservationLevelKind, ManualObservationLevel>
+>;
+
 export interface Candle {
   date: string;
   open: number;
@@ -17,6 +35,7 @@ export interface WatchStock {
   sector: string;
   thesis: string;
   status: StockStatus;
+  manualLevels?: ManualObservationLevels;
 }
 
 export interface StrategySettings {
@@ -37,7 +56,7 @@ export interface MarketDataRecord {
   candles: Candle[];
   refreshedAt: string;
   tradingDate: string;
-  source: 'alpha-vantage' | 'demo' | 'cache';
+  source: 'alpha-vantage' | 'cache';
 }
 
 export type MarketDataMap = Record<string, MarketDataRecord>;
@@ -51,9 +70,19 @@ export interface TechnicalLevels {
   ma120: number | null;
   ma250: number | null;
   support: number | null;
+  deepSupport: number | null;
   resistance: number | null;
   volumeSignal: 'weakening_selling' | 'expanding' | 'neutral';
   insufficientData: string[];
+}
+
+export interface AppliedObservationLevel {
+  kind: ObservationLevelKind;
+  price: number;
+  source: ObservationLevelSource;
+  basis: string;
+  timeframe?: ObservationTimeframe;
+  confirmedAt?: string;
 }
 
 export interface Recommendation {
@@ -65,6 +94,8 @@ export interface Recommendation {
   blockers: string[];
   warnings: string[];
   levels: TechnicalLevels | null;
+  triggeredLevel: AppliedObservationLevel | null;
+  manualLevelCount: number;
 }
 
 export interface SignalSummary {

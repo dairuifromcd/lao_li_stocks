@@ -1,6 +1,5 @@
 import {
   getLatestRefresh,
-  mergeDemoData,
   refreshMarketData,
   testAlphaVantageKey,
 } from './marketData';
@@ -18,7 +17,17 @@ import {
   saveAppState,
   saveMarketCache,
 } from './storage';
-import type { AppState, MarketDataMap, Recommendation, StockStatus, WatchStock } from './types';
+import type {
+  AppState,
+  ManualObservationLevel,
+  ManualObservationLevels,
+  MarketDataMap,
+  MarketDataRecord,
+  ObservationLevelKind,
+  Recommendation,
+  StockStatus,
+  WatchStock,
+} from './types';
 import { formatCurrency, formatDateTime, normalizeTicker, roundMoney } from './utils';
 
 interface AppOptions {
@@ -37,9 +46,15 @@ interface RuntimeState {
 }
 
 const STATUS_LABELS: Record<StockStatus, string> = {
-  active: '跟踪',
-  sealed: '封仓',
-  no_action: '暂无操作',
+  active: '正常跟踪',
+  sealed: '暂停跟踪',
+  no_action: '仅显示行情',
+};
+
+const MANUAL_LEVEL_LABELS: Record<ObservationLevelKind, string> = {
+  low: '低位观察',
+  deep: '深度观察',
+  pressure: '压力观察',
 };
 
 export function initApp(root: HTMLElement, options: AppOptions = {}): void {
@@ -55,12 +70,12 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
   const getNow = () => options.now ?? new Date();
 
   const render = () => {
-    root.innerHTML = renderApp(runtime, getNow());
+    root.innerHTML = renderApp(runtime);
   };
 
   const refresh = async (force: boolean) => {
     if (!runtime.apiKey) {
-      runtime.error = '请先保存 Alpha Vantage API key。当前使用示例行情。';
+      runtime.error = '请先保存 Alpha Vantage API key。当前没有真实行情数据。';
       render();
       return;
     }
@@ -190,7 +205,7 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
     }
 
     if (action === 'force-refresh') {
-      void refresh(true);
+      void refresh(false);
     }
 
     if (action === 'remove-stock') {
@@ -212,14 +227,22 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
   }
 }
 
-export function renderApp(runtime: RuntimeState, now = new Date()): string {
+export function renderApp(runtime: RuntimeState): string {
   const symbols = runtime.state.watchlist.map((stock) => stock.symbol);
-  const effectiveMarketData = mergeDemoData(symbols, runtime.marketCache, now);
+  const effectiveMarketData = runtime.marketCache;
   const recommendations = generateRecommendations(runtime.state, effectiveMarketData);
   const summary = buildSignalSummary(recommendations);
-  const marketRecords = symbols.map((symbol) => effectiveMarketData[symbol]).filter(Boolean);
+  const marketRecords = symbols
+    .map((symbol) => effectiveMarketData[symbol])
+    .filter((record): record is MarketDataRecord => Boolean(record));
   const latestRefresh = getLatestRefresh(marketRecords);
-  const usesDemoData = marketRecords.some((record) => record.source === 'demo');
+  const marketStatus = runtime.refreshing
+    ? '刷新中'
+    : marketRecords.length === 0
+      ? '无行情数据'
+      : marketRecords.length < symbols.length
+        ? '部分真实日线'
+        : '真实日线行情';
 
   return `
     <div class="app-shell">
@@ -237,7 +260,7 @@ export function renderApp(runtime: RuntimeState, now = new Date()): string {
 
       <section class="notice-row" aria-live="polite">
         <div class="status-line" data-testid="refresh-status">
-          <strong>${runtime.refreshing ? '刷新中' : usesDemoData ? '示例/缓存行情' : '真实行情'}</strong>
+          <strong>${marketStatus}</strong>
           <span>最近刷新：${formatDateTime(latestRefresh)}</span>
         </div>
         ${runtime.notice ? `<div class="notice">${escapeHtml(runtime.notice)}</div>` : ''}
@@ -257,9 +280,9 @@ export function renderApp(runtime: RuntimeState, now = new Date()): string {
             <small>非“继续观察”的项目</small>
           </article>
           <article class="metric">
-            <span>开仓/加仓区</span>
+            <span>低位观察区</span>
             <strong>${summary.entryCount + summary.addWatchCount}</strong>
-            <small>只表示技术位触发</small>
+            <small>低位与深度观察提醒</small>
           </article>
           <article class="metric">
             <span>压力区</span>
@@ -280,12 +303,14 @@ export function renderApp(runtime: RuntimeState, now = new Date()): string {
             <div class="section-heading">
               <div>
                 <h2>每日信号</h2>
-                <p>按技术区间输出：压力区 > 加仓观察区 > 开仓观察区 > 继续观察。</p>
+                <p>手动价位优先；同一来源按压力区 > 深度观察区 > 低位观察区排序。</p>
               </div>
               <span class="badge">${recommendations.length} 只</span>
             </div>
             <div class="recommendations" data-testid="recommendation-list">
-              ${recommendations.map(renderRecommendation).join('')}
+              ${recommendations
+                .map((item) => renderRecommendation(item, effectiveMarketData[item.symbol]))
+                .join('')}
             </div>
           </section>
         </section>
@@ -302,7 +327,7 @@ function renderApiPanel(apiKey: string): string {
         <span class="badge">${apiKey ? '已配置' : '未配置'}</span>
       </div>
       <label class="field">
-        <span>Alpha Vantage API key</span>
+        <span>Alpha Vantage API key（免费日线）</span>
         <input data-testid="api-key-input" type="password" value="${escapeHtml(apiKey)}" placeholder="保存后打开页面会自动刷新" />
       </label>
       <div class="button-row">
@@ -322,8 +347,8 @@ function renderSettingsPanel(state: AppState): string {
         <span class="badge">技术信号</span>
       </div>
       <div class="form-grid">
-        ${numberField('开仓缓冲 %', 'entryBufferPercent', state.settings.entryBufferPercent, 'settings', 0.1)}
-        ${numberField('加仓观察折扣 %', 'addDiscountPercent', state.settings.addDiscountPercent, 'settings', 0.1)}
+        ${numberField('观察区缓冲 %', 'entryBufferPercent', state.settings.entryBufferPercent, 'settings', 0.1)}
+        ${numberField('自动深层间距 %', 'addDiscountPercent', state.settings.addDiscountPercent, 'settings', 0.1)}
         ${numberField('压力区缓冲 %', 'resistanceBufferPercent', state.settings.resistanceBufferPercent, 'settings', 0.1)}
         ${numberField('最低K线数', 'minimumCandles', state.settings.minimumCandles, 'settings', 1)}
       </div>
@@ -371,7 +396,67 @@ function renderStockRow(stock: WatchStock): string {
         <span>跟踪逻辑</span>
         <textarea data-field="thesis" rows="2">${escapeHtml(stock.thesis)}</textarea>
       </label>
+      ${renderManualLevelEditor(stock)}
     </div>
+  `;
+}
+
+function renderManualLevelEditor(stock: WatchStock): string {
+  const configuredCount = (['low', 'deep', 'pressure'] as ObservationLevelKind[]).filter(
+    (kind) => stock.manualLevels?.[kind],
+  ).length;
+
+  return `
+    <details class="manual-level-editor">
+      <summary>
+        <span>手动观察价位</span>
+        <span class="badge">可选 · ${configuredCount}/3</span>
+      </summary>
+      <div class="manual-level-list">
+        ${(['low', 'deep', 'pressure'] as ObservationLevelKind[])
+          .map((kind) => renderManualLevelRow(kind, stock.manualLevels?.[kind]))
+          .join('')}
+      </div>
+    </details>
+  `;
+}
+
+function renderManualLevelRow(
+  kind: ObservationLevelKind,
+  level: ManualObservationLevel | undefined,
+): string {
+  const invalidationPlaceholder =
+    kind === 'pressure' ? '高于该价失效' : '低于该价失效';
+
+  return `
+    <fieldset class="manual-level-row" data-manual-kind="${kind}">
+      <legend>${MANUAL_LEVEL_LABELS[kind]}</legend>
+      <div class="manual-level-fields">
+        <label class="field">
+          <span>观察价</span>
+          <input type="number" min="0" step="0.01" data-level-field="price" value="${level?.price ?? ''}" placeholder="可选" />
+        </label>
+        <label class="field">
+          <span>失效价（收盘）</span>
+          <input type="number" min="0" step="0.01" data-level-field="invalidationPrice" value="${level?.invalidationPrice ?? ''}" placeholder="${invalidationPlaceholder}" />
+        </label>
+        <label class="field">
+          <span>依据周期</span>
+          <select data-level-field="timeframe">
+            <option value="daily" ${level?.timeframe !== 'weekly' ? 'selected' : ''}>日线</option>
+            <option value="weekly" ${level?.timeframe === 'weekly' ? 'selected' : ''}>周线</option>
+          </select>
+        </label>
+        <label class="field level-basis">
+          <span>价位依据</span>
+          <input data-level-field="basis" value="${escapeHtml(level?.basis ?? '')}" placeholder="前低、平台、均线或突破回踩" />
+        </label>
+        <label class="field">
+          <span>确认日期</span>
+          <input type="date" data-level-field="confirmedAt" value="${escapeHtml(level?.confirmedAt ?? '')}" />
+        </label>
+      </div>
+    </fieldset>
   `;
 }
 
@@ -406,9 +491,24 @@ function renderAddStockForm(): string {
   `;
 }
 
-function renderRecommendation(item: Recommendation): string {
+function renderRecommendation(
+  item: Recommendation,
+  marketRecord?: MarketDataRecord,
+): string {
   const confidence = Math.round(item.confidence * 100);
   const levels = item.levels;
+  const signalSourceLabel = item.triggeredLevel
+    ? item.triggeredLevel.source === 'manual'
+      ? '手动价位'
+      : '自动技术参考'
+    : item.manualLevelCount > 0
+      ? `已配置 ${item.manualLevelCount} 个手动价位`
+      : '自动技术参考';
+  const marketSourceLabel = marketRecord
+    ? marketRecord.source === 'alpha-vantage'
+      ? 'Alpha Vantage 日线'
+      : '缓存日线'
+    : '未加载行情';
 
   return `
     <article class="recommendation ${item.action}" data-testid="recommendation-card">
@@ -417,17 +517,20 @@ function renderRecommendation(item: Recommendation): string {
           <span class="symbol">${escapeHtml(item.symbol)}</span>
           <strong>${item.label}</strong>
         </div>
-        <span class="score">${confidence}%</span>
+        <span class="score" title="规则匹配度">${confidence}%</span>
       </div>
       <div class="recommendation-meta">
+        <span>${marketSourceLabel}</span>
+        <span>${signalSourceLabel}</span>
         <span>规则提醒，不含交易数量</span>
         <span>交易日 ${levels?.tradingDate ?? 'N/A'}</span>
+        <span>刷新 ${formatDateTime(marketRecord?.refreshedAt)}</span>
       </div>
       <dl class="levels">
-        <div><dt>现价</dt><dd>${levels ? formatCurrency(levels.currentPrice) : 'N/A'}</dd></div>
-        <div><dt>支撑</dt><dd>${levels?.support ? formatCurrency(levels.support) : 'N/A'}</dd></div>
-        <div><dt>压力</dt><dd>${levels?.resistance ? formatCurrency(levels.resistance) : 'N/A'}</dd></div>
-        <div><dt>MA60</dt><dd>${levels?.ma60 ? formatCurrency(levels.ma60) : 'N/A'}</dd></div>
+        <div><dt>最近收盘</dt><dd>${levels ? formatCurrency(levels.currentPrice) : 'N/A'}</dd></div>
+        <div><dt>触发价位</dt><dd>${item.triggeredLevel ? formatCurrency(item.triggeredLevel.price) : 'N/A'}</dd></div>
+        <div><dt>自动支撑</dt><dd>${levels?.support ? formatCurrency(levels.support) : 'N/A'}</dd></div>
+        <div><dt>自动压力</dt><dd>${levels?.resistance ? formatCurrency(levels.resistance) : 'N/A'}</dd></div>
       </dl>
       <details>
         <summary>查看依据</summary>
@@ -507,10 +610,50 @@ function readStateFromDom(root: HTMLElement, previousState: AppState): AppState 
       sector: readString(row, 'sector', previous?.sector ?? 'Unassigned'),
       thesis: readString(row, 'thesis', previous?.thesis ?? ''),
       status: readStatus(row, previous?.status ?? 'active'),
+      manualLevels: readManualLevels(row),
     };
   });
 
   return sanitizeState({ watchlist, settings, lastSavedAt: new Date().toISOString() });
+}
+
+function readManualLevels(root: HTMLElement): ManualObservationLevels {
+  const levels: ManualObservationLevels = {};
+
+  root.querySelectorAll<HTMLElement>('[data-manual-kind]').forEach((row) => {
+    const kind = row.dataset.manualKind as ObservationLevelKind | undefined;
+    if (!kind || !['low', 'deep', 'pressure'].includes(kind)) {
+      return;
+    }
+
+    const price = readOptionalNumber(
+      row.querySelector<HTMLInputElement>('[data-level-field="price"]'),
+    );
+    if (price === undefined) {
+      return;
+    }
+
+    const invalidationPrice = readOptionalNumber(
+      row.querySelector<HTMLInputElement>('[data-level-field="invalidationPrice"]'),
+    );
+    const timeframeValue = row.querySelector<HTMLSelectElement>(
+      '[data-level-field="timeframe"]',
+    )?.value;
+    const basis =
+      row.querySelector<HTMLInputElement>('[data-level-field="basis"]')?.value.trim() ?? '';
+    const confirmedAt =
+      row.querySelector<HTMLInputElement>('[data-level-field="confirmedAt"]')?.value ?? '';
+
+    levels[kind] = {
+      price,
+      basis,
+      timeframe: timeframeValue === 'weekly' ? 'weekly' : 'daily',
+      ...(invalidationPrice === undefined ? {} : { invalidationPrice }),
+      ...(confirmedAt ? { confirmedAt } : {}),
+    };
+  });
+
+  return levels;
 }
 
 function readString(root: HTMLElement, field: string, fallback: string): string {
@@ -525,6 +668,15 @@ function readNumber(input: HTMLInputElement | null, fallback: number): number {
 
   const value = Number(input.value);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function readOptionalNumber(input: HTMLInputElement | null): number | undefined {
+  if (!input || input.value.trim() === '') {
+    return undefined;
+  }
+
+  const value = Number(input.value);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function readStatus(root: HTMLElement, fallback: StockStatus): StockStatus {

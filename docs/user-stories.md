@@ -1,8 +1,8 @@
-# Lao Li Stocks User Stories v2
+# Lao Li Stocks User Stories v3
 
 ## Scope
 
-Build a personal stock watchlist and technical-signal tracker inspired by Lao Li's left-side trading workflow. The tool should be available on phone and desktop, refresh market data when opened, and produce rule-based observation signals for user-defined stocks.
+Build a personal stock watchlist and technical-signal tracker inspired by Lao Li's left-side trading workflow. The tool should be available on phone and desktop, refresh market data when opened, and produce rule-based observation signals for user-defined stocks. Automatic technical levels work by default; optional manual observation levels override the matching automatic level category.
 
 This product provides decision support only. It does not record positions, calculate trade size, manage cash, or place trades.
 
@@ -19,7 +19,7 @@ As an individual investor, I want to save my market data API key locally or thro
 
 Acceptance criteria:
 
-- Given I have no API key configured, when I open the app, then the app uses demo or cached data and clearly marks the source.
+- Given I have no API key configured, when I open the app, then the app uses previously cached provider data or shows that no market data is loaded; it never generates a synthetic price.
 - Given I enter a valid API key and save it, when the app tests the key, then it stores the key and marks data access as ready.
 - Given I clear the saved key, when I reload the app, then no API key remains in local storage.
 - Given the key test API returns an error, when I save the key, then the app displays a non-destructive error and does not mark the key as tested.
@@ -39,21 +39,38 @@ Acceptance criteria:
 - Given I add the same ticker twice, when I save it, then the app rejects the duplicate and keeps the original item.
 - Given I remove a ticker, when I confirm removal, then it no longer appears in signals or refresh requests.
 - Given I enter lowercase or spaced ticker text, when it is saved, then the symbol is normalized to uppercase without surrounding whitespace.
-- Given a ticker is marked sealed or no-action, when signals are generated, then the app returns hold with the blocking reason.
+- Given a ticker is paused or set to market-data-only, when signals are generated, then the app returns continue-observing with the blocking reason.
 
 Automation target:
 
 - Unit test ticker normalization and duplicate detection.
 - UI test add, edit, remove, status, and persistence flows.
 
-## Story 3: Define Technical Signal Parameters
+## Story 3: Configure Optional Manual Observation Levels
+
+As an individual investor, I want to optionally confirm important observation levels for each stock, so that daily reminders use the technical structure I have reviewed without making manual setup mandatory.
+
+Acceptance criteria:
+
+- Given no manual levels are configured, when signals are generated, then the app uses automatic support, deeper support, resistance, and moving-average references.
+- Given a manual low, deep, or pressure level is configured, when signals are generated, then that level overrides only the matching automatic category.
+- Given a manual level is configured, when it is saved, then its price, basis, daily/weekly timeframe, optional invalidation price, and optional confirmation date are persisted.
+- Given price crosses a manual level's invalidation price, when signals are generated, then the app keeps the saved level, warns that it requires review, and does not silently replace it with an automatic level from the same category.
+- Given manual and automatic levels trigger together, when signals are generated, then a valid manual level is selected first.
+
+Automation target:
+
+- Unit test manual precedence, per-category automatic fallback, invalidation, and legacy-state sanitization.
+- UI test editing and local persistence of every manual-level audit field.
+
+## Story 4: Define Technical Signal Parameters
 
 As an individual investor, I want to define signal thresholds, so that the tracker reflects my preferred left-side observation rules without requiring position data.
 
 Acceptance criteria:
 
-- Given I set an entry buffer percentage, when price is within that distance above support, then the app can emit an entry-zone signal.
-- Given I set an add-watch discount percentage, when price moves below support by that amount, then the app can emit an add-watch signal.
+- Given I set an observation buffer percentage, when price is within that distance of a valid low or deep level, then the app can emit the matching observation signal.
+- Given no second automatic support exists, when an automatic deep level is needed, then the app projects it below the first support using the configured deep-level distance.
 - Given I set a resistance buffer percentage, when price is near resistance, then the app can emit a trim-watch signal.
 - Given I set a minimum candle count, when data has fewer candles than required, then the app includes an insufficient-data warning.
 
@@ -62,7 +79,7 @@ Automation target:
 - Unit test threshold calculations.
 - UI test recalculation after changing strategy parameters.
 
-## Story 4: Refresh Data On App Open
+## Story 5: Refresh Data On App Open
 
 As an individual investor, I want the app to refresh data automatically when I open it, so that phone and desktop sessions show current signals with no manual workflow.
 
@@ -72,7 +89,7 @@ Acceptance criteria:
 - Given data was already refreshed today, when I reopen the app, then the app uses cached data unless I manually force refresh.
 - Given the market is closed and no newer daily bar exists, when the app refreshes, then it keeps the last complete trading day and shows that timestamp.
 - Given the refresh fails, when cached data exists, then the app keeps cached data and marks signals as stale.
-- Given the refresh fails and no cached data exists, when I open the app, then the app shows demo data or an actionable error state.
+- Given the refresh fails and no cached data exists, when I open the app, then the app shows `N/A`, continue-observing, and an actionable error state instead of a synthetic price.
 
 Automation target:
 
@@ -80,7 +97,7 @@ Automation target:
 - Integration test refresh service with mocked market data API and cache.
 - UI test first open, cached reopen, forced refresh, and failure paths.
 
-## Story 5: Protect API Quota With Daily Cache
+## Story 6: Protect API Quota With Daily Cache
 
 As a data refresh service, I want to cache each ticker's daily data, so that repeated opens do not consume unnecessary free API quota.
 
@@ -89,14 +106,16 @@ Acceptance criteria:
 - Given a ticker has a successful refresh for the current trading date, when another session requests it, then the service returns cached data.
 - Given cached data is older than the latest complete trading day, when refresh is requested, then the service fetches new data.
 - Given multiple tickers are requested, when the API quota would be exceeded, then the service refreshes only allowed tickers and reports skipped tickers.
-- Given the upstream API rate-limits the request, when refresh is attempted, then the service backs off and returns a rate-limit status instead of retrying in a loop.
+- Given multiple uncached tickers are requested, when they are refreshed, then request start times are spaced by at least 1.2 seconds for the free-tier burst limit.
+- Given the upstream API rate-limits a request, when refresh is attempted, then the service backs off and retries at most once before returning a concise rate-limit status.
+- Given a ticker already refreshed successfully today, when the refresh button is clicked again, then the app uses that cache without making another API call.
 
 Automation target:
 
 - Unit test trading-date cache keys.
-- Integration test quota counting, cache hit, cache miss, and rate-limit responses.
+- Integration test request spacing, bounded retry, cache hit, cache miss, and rate-limit responses.
 
-## Story 6: Generate Technical Levels
+## Story 7: Generate Technical Levels
 
 As a strategy engine, I want to calculate support, resistance, moving averages, price distance, and volume behavior, so that signals are based on repeatable technical inputs.
 
@@ -104,7 +123,7 @@ Acceptance criteria:
 
 - Given at least 250 daily candles are available, when indicators are calculated, then the engine returns MA20, MA60, MA120, and MA250.
 - Given fewer candles are available, when indicators are calculated, then unavailable indicators are marked as insufficient data.
-- Given recent swing highs and lows exist, when levels are calculated, then the engine returns candidate support and resistance levels.
+- Given recent swing highs and lows exist, when levels are calculated, then the engine returns candidate support, deeper support, and resistance levels.
 - Given volume declines while price approaches support, when the signal is scored, then the output records a selling-pressure-weakening factor.
 - Given price is far above support and below resistance, when signals are generated, then the app returns continue-observing.
 
@@ -113,24 +132,24 @@ Automation target:
 - Unit test indicator calculations against fixed candle fixtures.
 - Unit test support/resistance detection and insufficient-data behavior.
 
-## Story 7: Generate Daily Observation Signals
+## Story 8: Generate Daily Observation Signals
 
 As an individual investor, I want each stock to receive a daily signal, so that I can quickly decide what deserves manual review.
 
 Acceptance criteria:
 
-- Given price enters the first support zone, when signals are generated, then the stock receives an entry-zone signal.
-- Given price moves deeper below support, when signals are generated, then the stock receives an add-watch-zone signal.
-- Given price reaches a resistance zone, when signals are generated, then the stock receives a trim-watch-zone signal.
-- Given the stock is sealed, no-action, or data is stale, when signals are generated, then the stock receives continue-observing with the blocking reason.
-- Given multiple signals apply, when signals are generated, then resistance-zone takes priority over entry/add-watch signals.
+- Given price enters the first support zone, when signals are generated, then the stock receives a low-observation signal.
+- Given price enters the next lower support zone, when signals are generated, then the stock receives a deep-observation signal.
+- Given price reaches a resistance zone, when signals are generated, then the stock receives a pressure-observation signal.
+- Given the stock is paused, market-data-only, or data is stale, when signals are generated, then the stock receives continue-observing with the blocking reason.
+- Given multiple levels from the same source apply, when signals are generated, then pressure takes priority over deep, then low.
 
 Automation target:
 
 - Unit test signal priority and output schema.
-- Snapshot test representative signals for entry, add-watch, hold, trim-watch, sealed, stale, and insufficient-data cases.
+- Snapshot test representative signals for low, deep, pressure, continue-observing, paused, stale, and insufficient-data cases.
 
-## Story 8: Explain Every Signal
+## Story 9: Explain Every Signal
 
 As an individual investor, I want each signal to show its reason and blocking conditions, so that I can audit the tool instead of blindly following it.
 
@@ -139,22 +158,22 @@ Acceptance criteria:
 - Given a signal is shown, when I expand it, then I see price, key levels, moving averages, volume note, and technical settings used.
 - Given a signal is blocked, when I expand it, then I see the exact status or data rule that blocked it.
 - Given data is stale or incomplete, when a signal is shown, then the warning is visible beside the signal.
-- Given the app displays entry/add/trim language, then it also displays that this is a rule-based reminder, not financial advice or an order instruction.
+- Given the app displays low/deep/pressure language, then it also displays that this is a rule-based reminder, not financial advice or an order instruction.
 
 Automation target:
 
 - UI test expandable explanation content.
 - Accessibility test warning and disclaimer text presence.
 
-## Story 9: Review Signal Summary
+## Story 10: Review Signal Summary
 
 As an individual investor, I want a signal summary, so that I can see how many stocks are tracked and how many require manual review today.
 
 Acceptance criteria:
 
 - Given watchlist items exist, when the dashboard loads, then it shows tracked count and actionable signal count.
-- Given entry/add-watch signals exist, when the dashboard loads, then it groups them as buy-zone observations.
-- Given trim-watch signals exist, when the dashboard loads, then it shows a pressure-zone count.
+- Given low/deep signals exist, when the dashboard loads, then it groups them as low-price observations.
+- Given pressure signals exist, when the dashboard loads, then it shows a pressure-zone count.
 - Given no signal needs action, when the dashboard loads, then the primary state is continue-observing.
 
 Automation target:
@@ -162,7 +181,7 @@ Automation target:
 - Unit test summary calculations.
 - UI test grouping, warnings, and no-action state.
 
-## Story 10: Work Across Phone And Desktop
+## Story 11: Work Across Phone And Desktop
 
 As an individual investor, I want the same URL to work on phone and desktop, so that I can check signals anywhere.
 
@@ -178,7 +197,7 @@ Automation target:
 - Responsive UI tests for mobile and desktop viewport widths.
 - PWA manifest and offline-cache checks.
 
-## Story 11: Sync Settings Across Devices
+## Story 12: Sync Settings Across Devices
 
 As an individual investor, I want optional cloud sync for watchlist and technical settings, so that phone and desktop use the same tracking model.
 
@@ -194,7 +213,7 @@ Automation target:
 - Unit test local vs synced storage adapters.
 - Integration test mocked auth, save, load, conflict, and sync-failure states.
 
-## Story 12: Keep Deployment Free-Tier Friendly
+## Story 13: Keep Deployment Free-Tier Friendly
 
 As a maintainer, I want the app to fit free hosting and API limits, so that personal use remains free.
 
@@ -211,7 +230,7 @@ Automation target:
 - Integration test API call counting.
 - Configuration test for required environment variables.
 
-## Story 13: Audit Refresh And Signal History
+## Story 14: Audit Refresh And Signal History
 
 As an individual investor, I want to review previous daily signals, so that I can evaluate whether the strategy behaves consistently.
 
@@ -227,7 +246,7 @@ Automation target:
 - Unit test snapshot creation and pruning.
 - UI test history list and historical-state labeling.
 
-## Story 14: Fail Safely
+## Story 15: Fail Safely
 
 As an individual investor, I want the app to fail safely when data or rules are uncertain, so that it does not create false confidence.
 

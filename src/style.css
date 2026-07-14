@@ -320,6 +320,46 @@ textarea {
   margin-top: 0.25rem;
 }
 
+.manual-level-editor summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.manual-level-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.manual-level-row {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: #ffffff;
+}
+
+.manual-level-row legend {
+  padding: 0 0.3rem;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.manual-level-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.manual-level-fields .level-basis {
+  grid-column: span 2;
+}
+
 .add-form {
   display: flex;
   flex-direction: column;
@@ -468,8 +508,13 @@ summary {
   .recommendations,
   .form-grid,
   .form-grid.dense,
+  .manual-level-fields,
   .levels {
     grid-template-columns: 1fr;
+  }
+
+  .manual-level-fields .level-basis {
+    grid-column: auto;
   }
 
   .topbar {
