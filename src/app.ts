@@ -1,8 +1,12 @@
 import {
+  createAlphaVantageRequestScheduler,
   getLatestRefresh,
   refreshMarketData,
   testAlphaVantageKey,
 } from './marketData';
+import { recordSignalSnapshot } from './history';
+import { getRequiredBenchmarkSymbols } from './marketContext';
+import { refreshSupplementalData } from './supplementalData';
 import {
   buildSignalSummary,
   generateRecommendations,
@@ -12,21 +16,31 @@ import {
   clearApiKey,
   loadApiKey,
   loadAppState,
+  loadEarningsCalendar,
   loadMarketCache,
+  loadSignalHistory,
+  loadWeeklyCache,
   saveApiKey,
   saveAppState,
+  saveEarningsCalendar,
   saveMarketCache,
+  saveSignalHistory,
+  saveWeeklyCache,
 } from './storage';
 import type {
   AppState,
+  EarningsCalendarCache,
   ManualObservationLevel,
   ManualObservationLevels,
   MarketDataMap,
   MarketDataRecord,
   ObservationLevelKind,
   Recommendation,
+  SignalSnapshot,
   StockStatus,
+  TrendState,
   WatchStock,
+  WeeklyDataMap,
 } from './types';
 import { formatCurrency, formatDateTime, normalizeTicker, roundMoney } from './utils';
 
@@ -40,6 +54,9 @@ interface RuntimeState {
   state: AppState;
   apiKey: string;
   marketCache: MarketDataMap;
+  weeklyCache: WeeklyDataMap;
+  earningsCalendar: EarningsCalendarCache | null;
+  signalHistory: SignalSnapshot[];
   notice: string;
   error: string;
   refreshing: boolean;
@@ -62,6 +79,9 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
     state: loadAppState(),
     apiKey: loadApiKey(),
     marketCache: loadMarketCache(),
+    weeklyCache: loadWeeklyCache(),
+    earningsCalendar: loadEarningsCalendar(),
+    signalHistory: loadSignalHistory(),
     notice: '',
     error: '',
     refreshing: false,
@@ -71,6 +91,22 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
 
   const render = () => {
     root.innerHTML = renderApp(runtime);
+  };
+
+  const recordSnapshot = () => {
+    const recommendations = generateRecommendations(
+      runtime.state,
+      runtime.marketCache,
+      runtime.weeklyCache,
+      runtime.earningsCalendar,
+    );
+    runtime.signalHistory = recordSignalSnapshot(
+      runtime.signalHistory,
+      recommendations,
+      runtime.state.settings,
+      getNow(),
+    );
+    saveSignalHistory(runtime.signalHistory);
   };
 
   const refresh = async (force: boolean) => {
@@ -85,19 +121,46 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
     runtime.notice = force ? '正在强制刷新行情...' : '正在检查今日行情缓存...';
     render();
 
-    const symbols = runtime.state.watchlist.map((stock) => stock.symbol);
+    const watchSymbols = runtime.state.watchlist.map((stock) => stock.symbol);
+    const benchmarkSymbols = getRequiredBenchmarkSymbols(runtime.state.watchlist);
+    const weeklySymbols = [...new Set([...watchSymbols, ...benchmarkSymbols])];
+    const scheduler = createAlphaVantageRequestScheduler({ maxRequests: 24 });
     const result = await refreshMarketData(
-      symbols,
+      watchSymbols,
       runtime.apiKey,
       force ? {} : runtime.marketCache,
       fetchImpl,
       getNow(),
+      { scheduler },
     );
     runtime.marketCache = result.cache;
     saveMarketCache(result.cache);
+
+    const supplementalResult = await refreshSupplementalData(
+      weeklySymbols,
+      runtime.apiKey,
+      runtime.weeklyCache,
+      runtime.earningsCalendar,
+      fetchImpl,
+      getNow(),
+      { scheduler },
+    );
+    runtime.weeklyCache = supplementalResult.weeklyCache;
+    runtime.earningsCalendar = supplementalResult.earningsCalendar;
+    saveWeeklyCache(runtime.weeklyCache);
+    if (runtime.earningsCalendar) {
+      saveEarningsCalendar(runtime.earningsCalendar);
+    }
+    recordSnapshot();
     runtime.refreshing = false;
-    runtime.notice = buildRefreshNotice(result.refreshed, result.skipped);
-    runtime.error = result.errors.join('；');
+    runtime.notice = buildRefreshNotice(
+      result.refreshed,
+      result.skipped,
+      supplementalResult.weeklyRefreshed,
+      supplementalResult.weeklySkipped,
+      supplementalResult.earningsRefreshed,
+    );
+    runtime.error = [...result.errors, ...supplementalResult.errors].join('；');
     render();
   };
 
@@ -199,6 +262,7 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
     if (action === 'save-state') {
       runtime.state = readStateFromDom(root, runtime.state);
       saveAppState(runtime.state);
+      recordSnapshot();
       runtime.notice = '设置已保存，信号已重新计算。';
       runtime.error = '';
       render();
@@ -220,6 +284,7 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
     }
   });
 
+  recordSnapshot();
   render();
 
   if (runtime.apiKey && options.autoRefresh !== false) {
@@ -230,7 +295,12 @@ export function initApp(root: HTMLElement, options: AppOptions = {}): void {
 export function renderApp(runtime: RuntimeState): string {
   const symbols = runtime.state.watchlist.map((stock) => stock.symbol);
   const effectiveMarketData = runtime.marketCache;
-  const recommendations = generateRecommendations(runtime.state, effectiveMarketData);
+  const recommendations = generateRecommendations(
+    runtime.state,
+    effectiveMarketData,
+    runtime.weeklyCache,
+    runtime.earningsCalendar,
+  );
   const summary = buildSignalSummary(recommendations);
   const marketRecords = symbols
     .map((symbol) => effectiveMarketData[symbol])
@@ -275,19 +345,19 @@ export function renderApp(runtime: RuntimeState): string {
             <small>来自你的自选列表</small>
           </article>
           <article class="metric">
-            <span>今日信号</span>
-            <strong>${summary.actionableCount}</strong>
-            <small>非“继续观察”的项目</small>
+            <span>技术条件满足</span>
+            <strong>${summary.readyCount}</strong>
+            <small>全部七项条件通过</small>
           </article>
           <article class="metric">
-            <span>低位观察区</span>
-            <strong>${summary.entryCount + summary.addWatchCount}</strong>
-            <small>低位与深度观察提醒</small>
+            <span>接近或待确认</span>
+            <strong>${summary.waitingCount}</strong>
+            <small>仍有条件尚未满足</small>
           </article>
           <article class="metric">
-            <span>压力区</span>
-            <strong>${summary.trimWatchCount}</strong>
-            <small>可用于人工复核</small>
+            <span>风险观察</span>
+            <strong>${summary.riskCount}</strong>
+            <small>压力区或结构失效</small>
           </article>
         </section>
 
@@ -299,20 +369,23 @@ export function renderApp(runtime: RuntimeState): string {
             ${renderAddStockForm()}
           </div>
 
-          <section class="panel recommendations-panel">
-            <div class="section-heading">
-              <div>
-                <h2>每日信号</h2>
-                <p>手动价位优先；同一来源按压力区 > 深度观察区 > 低位观察区排序。</p>
+          <div class="signal-column">
+            <section class="panel recommendations-panel">
+              <div class="section-heading">
+                <div>
+                  <h2>每日信号</h2>
+                  <p>检查数据、支撑、位置、确认、市场环境、事件风险和空间比；“技术条件满足”不等于买入指令。</p>
+                </div>
+                <span class="badge">${recommendations.length} 只</span>
               </div>
-              <span class="badge">${recommendations.length} 只</span>
-            </div>
-            <div class="recommendations" data-testid="recommendation-list">
-              ${recommendations
-                .map((item) => renderRecommendation(item, effectiveMarketData[item.symbol]))
-                .join('')}
-            </div>
-          </section>
+              <div class="recommendations" data-testid="recommendation-list">
+                ${recommendations
+                  .map((item) => renderRecommendation(item, effectiveMarketData[item.symbol]))
+                  .join('')}
+              </div>
+            </section>
+            ${renderSignalHistory(runtime.signalHistory)}
+          </div>
         </section>
       </main>
     </div>
@@ -327,7 +400,7 @@ function renderApiPanel(apiKey: string): string {
         <span class="badge">${apiKey ? '已配置' : '未配置'}</span>
       </div>
       <label class="field">
-        <span>Alpha Vantage API key（免费日线）</span>
+        <span>Alpha Vantage API key（免费日线、复权周线与财报日历）</span>
         <input data-testid="api-key-input" type="password" value="${escapeHtml(apiKey)}" placeholder="保存后打开页面会自动刷新" />
       </label>
       <div class="button-row">
@@ -348,7 +421,6 @@ function renderSettingsPanel(state: AppState): string {
       </div>
       <div class="form-grid">
         ${numberField('观察区缓冲 %', 'entryBufferPercent', state.settings.entryBufferPercent, 'settings', 0.1)}
-        ${numberField('自动深层间距 %', 'addDiscountPercent', state.settings.addDiscountPercent, 'settings', 0.1)}
         ${numberField('压力区缓冲 %', 'resistanceBufferPercent', state.settings.resistanceBufferPercent, 'settings', 0.1)}
         ${numberField('最低K线数', 'minimumCandles', state.settings.minimumCandles, 'settings', 1)}
       </div>
@@ -495,8 +567,18 @@ function renderRecommendation(
   item: Recommendation,
   marketRecord?: MarketDataRecord,
 ): string {
-  const confidence = Math.round(item.confidence * 100);
   const levels = item.levels;
+  const passedConditionCount = item.conditionChecks.filter((check) => check.passed).length;
+  const totalConditionCount = item.conditionChecks.length;
+  const statusBadge = item.action === 'technical_ready'
+    ? `${totalConditionCount}/${totalConditionCount} 条件`
+    : item.action === 'approaching' || item.action === 'waiting_confirmation'
+      ? `${passedConditionCount}/${totalConditionCount} 条件`
+      : item.action === 'pressure_watch'
+        ? '压力'
+        : item.action === 'breakdown'
+          ? '失效'
+          : '观察';
   const signalSourceLabel = item.triggeredLevel
     ? item.triggeredLevel.source === 'manual'
       ? '手动价位'
@@ -509,6 +591,11 @@ function renderRecommendation(
       ? 'Alpha Vantage 日线'
       : '缓存日线'
     : '未加载行情';
+  const dataQualityLabel = item.dataQuality === 'complete'
+    ? '数据完整'
+    : item.dataQuality === 'limited'
+      ? '数据有限'
+      : '数据不足';
 
   return `
     <article class="recommendation ${item.action}" data-testid="recommendation-card">
@@ -517,21 +604,36 @@ function renderRecommendation(
           <span class="symbol">${escapeHtml(item.symbol)}</span>
           <strong>${item.label}</strong>
         </div>
-        <span class="score" title="规则匹配度">${confidence}%</span>
+        <span class="score">${statusBadge}</span>
       </div>
       <div class="recommendation-meta">
         <span>${marketSourceLabel}</span>
+        <span>${dataQualityLabel}</span>
         <span>${signalSourceLabel}</span>
         <span>规则提醒，不含交易数量</span>
+        <span>长期趋势 ${trendLabel(item.weeklyTrend?.state)}</span>
+        ${item.weeklyTrend?.ma40 !== null && item.weeklyTrend?.ma40 !== undefined
+          ? `<span>复权周线 MA40 ${formatCurrency(item.weeklyTrend.ma40)}</span>`
+          : ''}
+        <span>市场环境 ${item.marketEnvironment ? escapeHtml(item.marketEnvironment.detail) : '未加载'}</span>
+        <span>下一财报 ${item.nextEarnings?.reportDate ?? '未知或未来三个月无日期'}</span>
         <span>交易日 ${levels?.tradingDate ?? 'N/A'}</span>
         <span>刷新 ${formatDateTime(marketRecord?.refreshedAt)}</span>
       </div>
       <dl class="levels">
         <div><dt>最近收盘</dt><dd>${levels ? formatCurrency(levels.currentPrice) : 'N/A'}</dd></div>
-        <div><dt>触发价位</dt><dd>${item.triggeredLevel ? formatCurrency(item.triggeredLevel.price) : 'N/A'}</dd></div>
-        <div><dt>自动支撑</dt><dd>${levels?.support ? formatCurrency(levels.support) : 'N/A'}</dd></div>
-        <div><dt>自动压力</dt><dd>${levels?.resistance ? formatCurrency(levels.resistance) : 'N/A'}</dd></div>
+        <div><dt>观察价位</dt><dd>${item.triggeredLevel ? formatCurrency(item.triggeredLevel.price) : 'N/A'}</dd></div>
+        <div><dt>有效支撑</dt><dd>${levels?.support !== null && levels?.support !== undefined ? formatCurrency(levels.support) : 'N/A'}</dd></div>
+        <div><dt>有效压力</dt><dd>${levels?.resistance !== null && levels?.resistance !== undefined ? formatCurrency(levels.resistance) : 'N/A'}</dd></div>
       </dl>
+      <ul class="condition-list" aria-label="技术条件">
+        ${item.conditionChecks.map((check) => `
+          <li class="${check.passed ? 'passed' : 'failed'}">
+            <span>${check.passed ? '通过' : '未通过'}</span>
+            <div><strong>${escapeHtml(check.label)}</strong><small>${escapeHtml(check.detail)}</small></div>
+          </li>
+        `).join('')}
+      </ul>
       <details>
         <summary>查看依据</summary>
         ${renderList('理由', item.reasons)}
@@ -540,6 +642,50 @@ function renderRecommendation(
       </details>
     </article>
   `;
+}
+
+function renderSignalHistory(history: SignalSnapshot[]): string {
+  const recent = [...history].sort((a, b) => b.tradingDate.localeCompare(a.tradingDate)).slice(0, 7);
+  return `
+    <section class="panel history-panel" data-testid="signal-history">
+      <div class="section-heading compact">
+        <div>
+          <h2>信号历史</h2>
+          <p>每天保留最后一次计算结果，最多保存 180 个交易日。</p>
+        </div>
+        <span class="badge">${history.length} 日</span>
+      </div>
+      ${recent.length === 0
+        ? '<p class="empty-state">有行情数据后开始记录。</p>'
+        : `<div class="history-list">
+            ${recent.map((snapshot, index) => `
+              <details class="history-row" ${index === 0 ? 'open' : ''}>
+                <summary>
+                  <span>${snapshot.tradingDate}</span>
+                  <small>${snapshot.items.length} 只</small>
+                </summary>
+                <div class="history-items">
+                  ${snapshot.items.map((item) => `
+                    <div>
+                      <strong>${escapeHtml(item.symbol)}</strong>
+                      <span>${escapeHtml(item.label)}</span>
+                      <span>${item.passedConditions}/${item.totalConditions}</span>
+                      <span>${item.currentPrice === null ? 'N/A' : formatCurrency(item.currentPrice)}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </details>
+            `).join('')}
+          </div>`}
+    </section>
+  `;
+}
+
+function trendLabel(state: TrendState | undefined): string {
+  if (state === 'healthy') return '健康';
+  if (state === 'neutral') return '中性';
+  if (state === 'weak') return '偏弱';
+  return '不可用';
 }
 
 function renderList(title: string, items: string[]): string {
@@ -586,10 +732,6 @@ function readStateFromDom(root: HTMLElement, previousState: AppState): AppState 
     entryBufferPercent: readNumber(
       root.querySelector<HTMLInputElement>('[data-settings="entryBufferPercent"]'),
       previousState.settings.entryBufferPercent,
-    ),
-    addDiscountPercent: readNumber(
-      root.querySelector<HTMLInputElement>('[data-settings="addDiscountPercent"]'),
-      previousState.settings.addDiscountPercent,
     ),
     resistanceBufferPercent: readNumber(
       root.querySelector<HTMLInputElement>('[data-settings="resistanceBufferPercent"]'),
@@ -684,13 +826,28 @@ function readStatus(root: HTMLElement, fallback: StockStatus): StockStatus {
   return value === 'sealed' || value === 'no_action' || value === 'active' ? value : fallback;
 }
 
-function buildRefreshNotice(refreshed: string[], skipped: string[]): string {
+function buildRefreshNotice(
+  refreshed: string[],
+  skipped: string[],
+  weeklyRefreshed: string[],
+  weeklySkipped: string[],
+  earningsRefreshed: boolean,
+): string {
   const parts = [];
   if (refreshed.length > 0) {
     parts.push(`已刷新：${refreshed.join(', ')}`);
   }
   if (skipped.length > 0) {
-    parts.push(`使用今日缓存：${skipped.join(', ')}`);
+    parts.push(`日线缓存：${skipped.join(', ')}`);
+  }
+  if (weeklyRefreshed.length > 0) {
+    parts.push(`已刷新复权周线：${weeklyRefreshed.join(', ')}`);
+  }
+  if (weeklySkipped.length > 0) {
+    parts.push(`周线本周已缓存：${weeklySkipped.join(', ')}`);
+  }
+  if (earningsRefreshed) {
+    parts.push('已刷新财报日历');
   }
   return parts.join('；') || '没有刷新任何股票。';
 }

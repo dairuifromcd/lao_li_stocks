@@ -1,4 +1,4 @@
-# Lao Li Stocks User Stories v3
+# Lao Li Stocks User Stories v5
 
 ## Scope
 
@@ -52,7 +52,7 @@ As an individual investor, I want to optionally confirm important observation le
 
 Acceptance criteria:
 
-- Given no manual levels are configured, when signals are generated, then the app uses automatic support, deeper support, resistance, and moving-average references.
+- Given no manual levels are configured, when signals are generated, then the app uses validated automatic support, deeper support, and resistance price structures.
 - Given a manual low, deep, or pressure level is configured, when signals are generated, then that level overrides only the matching automatic category.
 - Given a manual level is configured, when it is saved, then its price, basis, daily/weekly timeframe, optional invalidation price, and optional confirmation date are persisted.
 - Given price crosses a manual level's invalidation price, when signals are generated, then the app keeps the saved level, warns that it requires review, and does not silently replace it with an automatic level from the same category.
@@ -69,9 +69,9 @@ As an individual investor, I want to define signal thresholds, so that the track
 
 Acceptance criteria:
 
-- Given I set an observation buffer percentage, when price is within that distance of a valid low or deep level, then the app can emit the matching observation signal.
-- Given no second automatic support exists, when an automatic deep level is needed, then the app projects it below the first support using the configured deep-level distance.
-- Given I set a resistance buffer percentage, when price is near resistance, then the app can emit a trim-watch signal.
+- Given I set an observation buffer percentage, when price is above and within that distance of a valid low or deep level, then the app marks the stock as inside the observation zone.
+- Given no second validated support cluster exists, when levels are calculated, then the app leaves automatic deeper support unavailable instead of projecting one by percentage.
+- Given I set a resistance buffer percentage, when price is below and near resistance, then the app can emit a pressure-observation signal.
 - Given I set a minimum candle count, when data has fewer candles than required, then the app includes an insufficient-data warning.
 
 Automation target:
@@ -90,6 +90,8 @@ Acceptance criteria:
 - Given the market is closed and no newer daily bar exists, when the app refreshes, then it keeps the last complete trading day and shows that timestamp.
 - Given the refresh fails, when cached data exists, then the app keeps cached data and marks signals as stale.
 - Given the refresh fails and no cached data exists, when I open the app, then the app shows `N/A`, continue-observing, and an actionable error state instead of a synthetic price.
+- Given adjusted weekly data was refreshed in the current calendar week, when I reopen the app, then the app reuses it without another weekly request.
+- Given the earnings calendar was refreshed in the last seven days, when I reopen the app, then the app reuses it without another calendar request.
 
 Automation target:
 
@@ -109,6 +111,8 @@ Acceptance criteria:
 - Given multiple uncached tickers are requested, when they are refreshed, then request start times are spaced by at least 1.2 seconds for the free-tier burst limit.
 - Given the upstream API rate-limits a request, when refresh is attempted, then the service backs off and retries at most once before returning a concise rate-limit status.
 - Given a ticker already refreshed successfully today, when the refresh button is clicked again, then the app uses that cache without making another API call.
+- Given market benchmarks are needed, when data is refreshed, then SPY and sector ETFs request weekly data only and do not consume daily-data calls.
+- Given one refresh reaches 24 upstream calls, when more data remains, then the app stops requesting and reports that remaining data will be completed later.
 
 Automation target:
 
@@ -123,7 +127,12 @@ Acceptance criteria:
 
 - Given at least 250 daily candles are available, when indicators are calculated, then the engine returns MA20, MA60, MA120, and MA250.
 - Given fewer candles are available, when indicators are calculated, then unavailable indicators are marked as insufficient data.
-- Given recent swing highs and lows exist, when levels are calculated, then the engine returns candidate support, deeper support, and resistance levels.
+- Given at least 40 completed adjusted weekly candles are available, when long-term trend is calculated, then the engine returns weekly MA40 and excludes the still-forming current week.
+- Given daily MA120 or MA250 is unavailable but weekly MA40 exists, when data quality is evaluated, then weekly MA40 is used as the long-term reference.
+- Given recent swing highs and lows exist, when levels are calculated, then automatic levels are created only from clusters tested at least twice in the latest 90 daily bars.
+- Given an automatic support is returned, when its direction is checked, then it is at or below the latest close.
+- Given a tested support is above the latest close, when levels are calculated, then it is classified as broken support and potential resistance.
+- Given no second tested lower cluster exists, when deeper support is calculated, then it remains unavailable; no fixed-percentage projection is used.
 - Given volume declines while price approaches support, when the signal is scored, then the output records a selling-pressure-weakening factor.
 - Given price is far above support and below resistance, when signals are generated, then the app returns continue-observing.
 
@@ -138,16 +147,22 @@ As an individual investor, I want each stock to receive a daily signal, so that 
 
 Acceptance criteria:
 
-- Given price enters the first support zone, when signals are generated, then the stock receives a low-observation signal.
-- Given price enters the next lower support zone, when signals are generated, then the stock receives a deep-observation signal.
+- Given price enters a valid support zone, when data, level, location, confirmation, market environment, event risk, and room checks all pass, then the stock receives a technical-conditions-ready signal.
+- Given price enters a valid support zone but fewer than two of price stabilization, volume, and MA60 confirmation pass, then the stock receives waiting-for-confirmation.
+- Given price enters a valid support zone but room to resistance divided by risk to invalidation is below 2, then the stock receives waiting-for-confirmation.
+- Given price is outside but within twice the configured support buffer, when signals are generated, then the stock receives approaching-observation-zone.
 - Given price reaches a resistance zone, when signals are generated, then the stock receives a pressure-observation signal.
+- Given both SPY and the stock's sector ETF have weak weekly trends, when signals are generated, then market environment fails and no technical-conditions-ready signal is emitted.
+- Given a known earnings report is within seven days, when signals are generated, then event risk fails and no technical-conditions-ready signal is emitted.
+- Given adjusted weekly history has fewer than 40 completed candles, when signals are generated, then core data fails and no technical-conditions-ready signal is emitted.
+- Given price is below a tested former support, when signals are generated, then the stock receives structure-invalid-waiting-for-reclaim.
 - Given the stock is paused, market-data-only, or data is stale, when signals are generated, then the stock receives continue-observing with the blocking reason.
 - Given multiple levels from the same source apply, when signals are generated, then pressure takes priority over deep, then low.
 
 Automation target:
 
-- Unit test signal priority and output schema.
-- Snapshot test representative signals for low, deep, pressure, continue-observing, paused, stale, and insufficient-data cases.
+- Unit test the seven-condition gate, directional level invariants, signal priority, and output schema.
+- Snapshot test representative signals for ready, approaching, waiting, pressure, breakdown, paused, stale, and insufficient-data cases.
 
 ## Story 9: Explain Every Signal
 
@@ -155,10 +170,13 @@ As an individual investor, I want each signal to show its reason and blocking co
 
 Acceptance criteria:
 
-- Given a signal is shown, when I expand it, then I see price, key levels, moving averages, volume note, and technical settings used.
+- Given a signal is shown, when I view its card, then I see pass/fail results and details for data, level, location, confirmation, market environment, event risk, and room checks.
+- Given adjusted weekly data is available, when I view a signal, then I see the weekly trend state and MA40 reference.
+- Given a future earnings date is known, when I view a signal, then I see that date on the card.
 - Given a signal is blocked, when I expand it, then I see the exact status or data rule that blocked it.
 - Given data is stale or incomplete, when a signal is shown, then the warning is visible beside the signal.
-- Given the app displays low/deep/pressure language, then it also displays that this is a rule-based reminder, not financial advice or an order instruction.
+- Given the app displays technical-conditions-ready, then it also displays that this is a rule-based reminder, not a buy instruction, financial advice, or an order instruction.
+- Given a signal is rendered, then the app does not show a percentage confidence score.
 
 Automation target:
 
@@ -171,9 +189,9 @@ As an individual investor, I want a signal summary, so that I can see how many s
 
 Acceptance criteria:
 
-- Given watchlist items exist, when the dashboard loads, then it shows tracked count and actionable signal count.
-- Given low/deep signals exist, when the dashboard loads, then it groups them as low-price observations.
-- Given pressure signals exist, when the dashboard loads, then it shows a pressure-zone count.
+- Given watchlist items exist, when the dashboard loads, then it shows tracked count and technical-ready count.
+- Given approaching or waiting signals exist, when the dashboard loads, then it groups them as pending confirmation.
+- Given pressure or breakdown signals exist, when the dashboard loads, then it shows a risk-observation count.
 - Given no signal needs action, when the dashboard loads, then the primary state is continue-observing.
 
 Automation target:
@@ -237,6 +255,7 @@ As an individual investor, I want to review previous daily signals, so that I ca
 Acceptance criteria:
 
 - Given signals are generated, when the refresh completes, then a daily snapshot is stored with timestamp, inputs, and signal outputs.
+- Given settings are saved and signals are recalculated, when current daily data exists, then the same trading day's snapshot is replaced by the latest calculation.
 - Given I open history, when snapshots exist, then I can view prior signals by date.
 - Given storage reaches its configured limit, when a new snapshot is saved, then the oldest snapshot is pruned.
 - Given a historical snapshot is viewed, when current settings differ, then the app clearly marks it as historical and not recalculated.
@@ -253,7 +272,7 @@ As an individual investor, I want the app to fail safely when data or rules are 
 Acceptance criteria:
 
 - Given market data is missing, stale, or malformed, when signals are generated, then the stock receives continue-observing with a data-quality warning.
-- Given technical indicators conflict, when signals are generated, then the app lowers confidence instead of forcing a signal.
+- Given any required technical condition fails, when signals are generated, then the app reports the failed check and does not emit technical-conditions-ready.
 - Given a calculation throws an exception for one ticker, when the watchlist is processed, then other tickers still receive signals.
 - Given the app detects unknown rule output, when rendering signals, then it shows a safe fallback and logs a diagnostic event.
 

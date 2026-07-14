@@ -1,7 +1,7 @@
 import type { Candle, MarketDataMap, MarketDataRecord } from './types';
 import { normalizeTicker } from './utils';
 
-interface RefreshResult {
+export interface RefreshResult {
   cache: MarketDataMap;
   refreshed: string[];
   skipped: string[];
@@ -13,6 +13,14 @@ export interface RefreshOptions {
   rateLimitRetryDelayMs?: number;
   wait?: (milliseconds: number) => Promise<void>;
   nowMs?: () => number;
+  scheduler?: AlphaRequestScheduler;
+  maxRequests?: number;
+}
+
+export interface AlphaRequestScheduler {
+  readonly requestCount: number;
+  readonly maxRequests: number;
+  schedule<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 interface AlphaVantageDailyResponse {
@@ -29,6 +37,45 @@ export class AlphaVantageRateLimitError extends Error {
   }
 }
 
+export class AlphaVantageRequestBudgetError extends Error {
+  constructor() {
+    super('Alpha Vantage 免费请求预算已用完');
+    this.name = 'AlphaVantageRequestBudgetError';
+  }
+}
+
+export function createAlphaVantageRequestScheduler(
+  options: Omit<RefreshOptions, 'scheduler'> = {},
+): AlphaRequestScheduler {
+  const minimumRequestIntervalMs = options.minimumRequestIntervalMs ?? 1200;
+  const wait = options.wait ?? delay;
+  const nowMs = options.nowMs ?? Date.now;
+  const maxRequests = options.maxRequests ?? Number.POSITIVE_INFINITY;
+  let lastRequestStartedAt: number | null = null;
+  let requestCount = 0;
+
+  return {
+    get requestCount() {
+      return requestCount;
+    },
+    maxRequests,
+    async schedule<T>(operation: () => Promise<T>): Promise<T> {
+      if (requestCount >= maxRequests) {
+        throw new AlphaVantageRequestBudgetError();
+      }
+      if (lastRequestStartedAt !== null) {
+        const elapsed = nowMs() - lastRequestStartedAt;
+        if (elapsed < minimumRequestIntervalMs) {
+          await wait(minimumRequestIntervalMs - elapsed);
+        }
+      }
+      lastRequestStartedAt = nowMs();
+      requestCount += 1;
+      return operation();
+    },
+  };
+}
+
 export async function refreshMarketData(
   symbols: string[],
   apiKey: string,
@@ -42,11 +89,9 @@ export async function refreshMarketData(
   const skipped: string[] = [];
   const errors: string[] = [];
   const refreshDate = toDateKey(now);
-  const minimumRequestIntervalMs = options.minimumRequestIntervalMs ?? 1200;
   const rateLimitRetryDelayMs = options.rateLimitRetryDelayMs ?? 1600;
   const wait = options.wait ?? delay;
-  const nowMs = options.nowMs ?? Date.now;
-  let lastRequestStartedAt: number | null = null;
+  const scheduler = options.scheduler ?? createAlphaVantageRequestScheduler(options);
 
   if (!apiKey.trim()) {
     return {
@@ -58,15 +103,7 @@ export async function refreshMarketData(
   }
 
   const requestCandles = async (symbol: string): Promise<Candle[]> => {
-    if (lastRequestStartedAt !== null) {
-      const elapsed = nowMs() - lastRequestStartedAt;
-      if (elapsed < minimumRequestIntervalMs) {
-        await wait(minimumRequestIntervalMs - elapsed);
-      }
-    }
-
-    lastRequestStartedAt = nowMs();
-    return fetchDailyCandles(symbol, apiKey, fetchImpl);
+    return scheduler.schedule(() => fetchDailyCandles(symbol, apiKey, fetchImpl));
   };
 
   for (const rawSymbol of symbols) {
@@ -107,6 +144,12 @@ export async function refreshMarketData(
       refreshed.push(symbol);
     } catch (error) {
       errors.push(`${symbol}: ${formatRefreshError(error)}`);
+      if (
+        error instanceof AlphaVantageRateLimitError
+        || error instanceof AlphaVantageRequestBudgetError
+      ) {
+        break;
+      }
     }
   }
 
@@ -199,6 +242,9 @@ function isRateLimitMessage(message: string): boolean {
 }
 
 function formatRefreshError(error: unknown): string {
+  if (error instanceof AlphaVantageRequestBudgetError) {
+    return '已达到本次免费请求预算，剩余数据将在下次刷新时补齐';
+  }
   if (error instanceof AlphaVantageRateLimitError) {
     return 'Alpha Vantage 免费额度限制，请稍后再试；系统不会继续循环请求';
   }

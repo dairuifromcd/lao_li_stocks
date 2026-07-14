@@ -21,6 +21,13 @@ describe('strategy dashboard', () => {
     expect(root.textContent).not.toContain('仓位');
     expect(root.textContent).not.toContain('封仓');
     expect(root.querySelectorAll('[data-manual-kind]').length).toBe(9);
+    expect(root.querySelector('[data-testid="recommendation-card"] .condition-list')?.children).toHaveLength(7);
+    expect(root.textContent).toContain('核心数据可用');
+    expect(root.textContent).toContain('市场环境');
+    expect(root.textContent).toContain('事件风险');
+    expect(root.textContent).toContain('空间比至少 2');
+    expect(root.querySelector('[data-testid="signal-history"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="recommendation-card"] .score')?.textContent).not.toContain('%');
   });
 
   it('adds a ticker to the watchlist and persists it locally', () => {
@@ -115,6 +122,7 @@ describe('strategy dashboard', () => {
     expect(nvda?.textContent).toContain('最近收盘');
     expect(nvda?.textContent).toContain('$203.53');
     expect(nvda?.textContent).toContain('交易日 2026-07-13');
+    expect(root.querySelector('[data-testid="signal-history"]')?.textContent).toContain('2026-07-13');
   });
 
   it('rejects legacy synthetic prices from browser cache', () => {
@@ -157,14 +165,13 @@ describe('strategy dashboard', () => {
           {
             symbol: 'NVDA',
             name: 'NVIDIA',
-            sector: 'Semiconductors',
+            sector: 'Unassigned',
             thesis: '',
             status: 'active',
           },
         ],
         settings: {
           entryBufferPercent: 3.5,
-          addDiscountPercent: 7,
           resistanceBufferPercent: 2,
           minimumCandles: 60,
         },
@@ -190,7 +197,34 @@ describe('strategy dashboard', () => {
           tradingDate: '2026-07-13',
           source: 'alpha-vantage',
         },
+        SPY: {
+          symbol: 'SPY',
+          candles: [
+            {
+              date: '2026-07-13',
+              open: 620,
+              high: 625,
+              low: 618,
+              close: 624,
+              volume: 80000000,
+            },
+          ],
+          refreshedAt: '2026-07-14T00:00:00.000Z',
+          tradingDate: '2026-07-13',
+          source: 'alpha-vantage',
+        },
       }),
+    );
+    localStorage.setItem(
+      'lao-li-stocks:v1:weekly-cache',
+      JSON.stringify({
+        NVDA: weeklyCacheRecord('NVDA', 203.53),
+        SPY: weeklyCacheRecord('SPY', 624),
+      }),
+    );
+    localStorage.setItem(
+      'lao-li-stocks:v1:earnings-calendar',
+      JSON.stringify({ refreshedAt: '2026-07-14T00:00:00.000Z', events: [] }),
     );
 
     let fetchCount = 0;
@@ -210,6 +244,24 @@ describe('strategy dashboard', () => {
     await Promise.resolve();
 
     expect(fetchCount).toBe(0);
-    expect(root.textContent).toContain('使用今日缓存：NVDA');
+    expect(root.textContent).toContain('日线缓存：NVDA');
+    expect(root.textContent).toContain('周线本周已缓存：NVDA, SPY');
   });
 });
+
+function weeklyCacheRecord(symbol: string, close: number) {
+  return {
+    symbol,
+    candles: [{
+      date: '2026-07-10',
+      open: close - 1,
+      high: close + 1,
+      low: close - 2,
+      close,
+      volume: 1000,
+    }],
+    refreshedAt: '2026-07-14T00:00:00.000Z',
+    tradingDate: '2026-07-10',
+    source: 'alpha-vantage',
+  };
+}
