@@ -6,6 +6,32 @@ Build a personal stock watchlist and technical-signal tracker inspired by Lao Li
 
 This product provides decision support only. It does not record positions, calculate trade size, manage cash, or place trades.
 
+## Implementation Status
+
+The acceptance criteria below define product targets. They do not imply that every capability is available in the tracked implementation.
+
+- **Implemented** means repository code supports the described behavior.
+- **Planned** means the behavior is a future target and must not be read as current behavior.
+- **Implemented / Planned** means the story contains both; the boundary is stated below.
+
+| Story | Status | Current boundary |
+| --- | --- | --- |
+| 1. Market data access | Implemented / Planned | Browser-local key save, test, clear, and cached-data fallback are implemented. Backend-secret storage and a persistent tested/readiness state are planned. |
+| 2. Watchlist | Implemented / Planned | Add, edit, remove, normalize, pause, market-data-only, and persistence flows are implemented. Reordering is planned. |
+| 3. Manual observation levels | Implemented | Manual fields, per-category precedence, invalidation warnings, and persistence are implemented. |
+| 4. Signal parameters | Implemented | Observation, resistance, and minimum-candle settings are implemented. |
+| 5. Refresh on open | Implemented / Planned | Automatic refresh, same-day daily caching, current-calendar-week weekly caching, seven-day earnings caching, and error fallback are implemented. A cache-bypassing force refresh and a distinct stale-data state are planned. |
+| 6. API quota protection | Implemented / Planned | Daily-cache reuse, 1.2-second spacing, one rate-limit retry, weekly-only benchmarks, and a 24-request refresh budget are implemented. Trading-date-aware freshness, a zero-request guarantee across all cache types, and an explicit remaining-ticker list are planned. |
+| 7. Technical levels | Implemented | Moving averages, tested price clusters, directional support, and volume behavior are implemented. |
+| 8. Daily observation signals | Implemented / Planned | The seven-condition gate and signal priorities are implemented. Stale-data blocking is planned. |
+| 9. Signal explanations | Implemented / Planned | Condition details, blockers, warnings, weekly context, earnings dates, and the disclaimer are implemented. A distinct stale-data warning is planned. |
+| 10. Signal summary | Implemented | Tracked, ready, pending-confirmation, and risk-observation counts are displayed. Warning counts are calculated internally but are not displayed in the summary. |
+| 11. Phone and desktop | Implemented / Planned | Responsive layout rules are implemented. Home-screen installation and offline caching are planned. |
+| 12. Cross-device sync | Implemented / Planned | Browser-local storage is implemented. Cloud sync, authentication, conflict handling, and unsynced state are planned. |
+| 13. Free-tier deployment | Implemented / Planned | The static Vite build and per-refresh request budget are implemented. Pre-limit quota warnings, deployment configuration, and serverless integration are planned. |
+| 14. Signal history | Implemented / Planned | Daily replacement, local retention, pruning, and the seven-date history view are implemented. Marking snapshots when settings have changed is planned. |
+| 15. Safe failure | Implemented / Planned | No-data and required-condition fallbacks are implemented. Per-ticker exception isolation and unknown-output diagnostics are planned. |
+
 ## Roles
 
 - Individual investor: manages watchlist, strategy parameters, and reviews daily signals.
@@ -86,9 +112,9 @@ As an individual investor, I want the app to refresh data automatically when I o
 Acceptance criteria:
 
 - Given I open the app for the first time today, when market data access is ready, then the app requests fresh data for the active watchlist.
-- Given data was already refreshed today, when I reopen the app, then the app uses cached data unless I manually force refresh.
+- **Planned:** Given data was already refreshed today, when I reopen the app, then the app uses cached data unless I manually force refresh. The implemented refresh button does not bypass the same-day daily cache.
 - Given the market is closed and no newer daily bar exists, when the app refreshes, then it keeps the last complete trading day and shows that timestamp.
-- Given the refresh fails, when cached data exists, then the app keeps cached data and marks signals as stale.
+- **Planned:** Given the refresh fails, when cached data exists, then the app keeps cached data and marks signals as stale. The implemented behavior keeps the cache and shows the refresh error without assigning a stale status.
 - Given the refresh fails and no cached data exists, when I open the app, then the app shows `N/A`, continue-observing, and an actionable error state instead of a synthetic price.
 - Given adjusted weekly data was refreshed in the current calendar week, when I reopen the app, then the app reuses it without another weekly request.
 - Given the earnings calendar was refreshed in the last seven days, when I reopen the app, then the app reuses it without another calendar request.
@@ -105,12 +131,12 @@ As a data refresh service, I want to cache each ticker's daily data, so that rep
 
 Acceptance criteria:
 
-- Given a ticker has a successful refresh for the current trading date, when another session requests it, then the service returns cached data.
-- Given cached data is older than the latest complete trading day, when refresh is requested, then the service fetches new data.
-- Given multiple tickers are requested, when the API quota would be exceeded, then the service refreshes only allowed tickers and reports skipped tickers.
+- Given a ticker has a successful refresh on the current UTC calendar date, when another session requests it, then the service returns cached daily data.
+- Given cached daily data was last refreshed before the current UTC calendar date, when refresh is requested, then the service fetches new daily data.
+- Given multiple tickers are requested, when the 24-request refresh budget is reached, then the service stops further calls and reports that remaining data can be completed later.
 - Given multiple uncached tickers are requested, when they are refreshed, then request start times are spaced by at least 1.2 seconds for the free-tier burst limit.
 - Given the upstream API rate-limits a request, when refresh is attempted, then the service backs off and retries at most once before returning a concise rate-limit status.
-- Given a ticker already refreshed successfully today, when the refresh button is clicked again, then the app uses that cache without making another API call.
+- Given a ticker already refreshed successfully today, when the refresh button is clicked again, then the app uses that cache without making another daily-data call; stale weekly or earnings-calendar caches can still make supplemental calls.
 - Given market benchmarks are needed, when data is refreshed, then SPY and sector ETFs request weekly data only and do not consume daily-data calls.
 - Given one refresh reaches 24 upstream calls, when more data remains, then the app stops requesting and reports that remaining data will be completed later.
 
@@ -156,7 +182,8 @@ Acceptance criteria:
 - Given a known earnings report is within seven days, when signals are generated, then event risk fails and no technical-conditions-ready signal is emitted.
 - Given adjusted weekly history has fewer than 40 completed candles, when signals are generated, then core data fails and no technical-conditions-ready signal is emitted.
 - Given price is below a tested former support, when signals are generated, then the stock receives structure-invalid-waiting-for-reclaim.
-- Given the stock is paused, market-data-only, or data is stale, when signals are generated, then the stock receives continue-observing with the blocking reason.
+- Given the stock is paused or market-data-only, when signals are generated, then the stock receives continue-observing with the blocking reason.
+- **Planned:** Given data is stale, when signals are generated, then the stock receives continue-observing with the blocking reason.
 - Given multiple levels from the same source apply, when signals are generated, then pressure takes priority over deep, then low.
 
 Automation target:
@@ -174,7 +201,8 @@ Acceptance criteria:
 - Given adjusted weekly data is available, when I view a signal, then I see the weekly trend state and MA40 reference.
 - Given a future earnings date is known, when I view a signal, then I see that date on the card.
 - Given a signal is blocked, when I expand it, then I see the exact status or data rule that blocked it.
-- Given data is stale or incomplete, when a signal is shown, then the warning is visible beside the signal.
+- Given data is incomplete, when a signal is shown, then the warning is visible beside the signal.
+- **Planned:** Given data is stale, when a signal is shown, then the warning is visible beside the signal.
 - Given the app displays technical-conditions-ready, then it also displays that this is a rule-based reminder, not a buy instruction, financial advice, or an order instruction.
 - Given a signal is rendered, then the app does not show a percentage confidence score.
 
@@ -207,8 +235,8 @@ Acceptance criteria:
 
 - Given I open the app on a phone viewport, when the dashboard loads, then core cards, signals, and refresh status are usable without horizontal scrolling.
 - Given I open the app on a desktop viewport, when the dashboard loads, then watchlist, settings, and signal detail can be viewed efficiently.
-- Given the app is installed to a phone home screen, when it opens, then it launches into the same dashboard route.
-- Given the device is offline, when I open the app, then cached data and last signals remain readable.
+- **Planned:** Given the app is installed to a phone home screen, when it opens, then it launches into the same dashboard route.
+- **Planned:** Given the device is offline, when I open the app, then cached data and last signals remain readable.
 
 Automation target:
 
@@ -221,10 +249,10 @@ As an individual investor, I want optional cloud sync for watchlist and technica
 
 Acceptance criteria:
 
-- Given sync is disabled, when I use the app, then all personal data stays local to the device.
-- Given sync is enabled and I sign in, when I update watchlist or settings on one device, then another device receives the updated configuration after reload.
-- Given sync fails, when I update local settings, then the app preserves local changes and marks them as unsynced.
-- Given I sign out, when the app returns to local mode, then cloud-only data is not shown unless I sign in again.
+- **Implemented:** Without cloud-sync support, all personal data stays local to the device.
+- **Planned:** Given sync is enabled and I sign in, when I update watchlist or settings on one device, then another device receives the updated configuration after reload.
+- **Planned:** Given sync fails, when I update local settings, then the app preserves local changes and marks them as unsynced.
+- **Planned:** Given I sign out, when the app returns to local mode, then cloud-only data is not shown unless I sign in again.
 
 Automation target:
 
@@ -238,9 +266,9 @@ As a maintainer, I want the app to fit free hosting and API limits, so that pers
 Acceptance criteria:
 
 - Given the production build runs, when assets are generated, then the build output stays within static hosting limits.
-- Given the app opens repeatedly during one day, when the same watchlist is used, then upstream API calls do not exceed one refresh per ticker per trading day unless forced.
-- Given API quota is nearly exhausted, when refresh is requested, then the app warns the user before consuming the remaining quota.
-- Given the backend has no required paid dependency, when deployment configuration is checked, then it can run on free-tier static hosting plus serverless functions.
+- Given a ticker has a successful daily refresh and the same browser cache is retained, when the app opens repeatedly, then it makes no additional daily-data call for that ticker on the same UTC calendar date.
+- **Planned:** Given API quota is nearly exhausted, when refresh is requested, then the app warns the user before consuming the remaining quota.
+- **Planned:** Given the backend has no required paid dependency, when deployment configuration is checked, then it can run on free-tier static hosting plus serverless functions.
 
 Automation target:
 
@@ -258,7 +286,7 @@ Acceptance criteria:
 - Given settings are saved and signals are recalculated, when current daily data exists, then the same trading day's snapshot is replaced by the latest calculation.
 - Given I open history, when snapshots exist, then I can view prior signals by date.
 - Given storage reaches its configured limit, when a new snapshot is saved, then the oldest snapshot is pruned.
-- Given a historical snapshot is viewed, when current settings differ, then the app clearly marks it as historical and not recalculated.
+- **Planned:** Given a historical snapshot is viewed, when current settings differ, then the app clearly marks it as historical and not recalculated.
 
 Automation target:
 
@@ -271,10 +299,11 @@ As an individual investor, I want the app to fail safely when data or rules are 
 
 Acceptance criteria:
 
-- Given market data is missing, stale, or malformed, when signals are generated, then the stock receives continue-observing with a data-quality warning.
+- Given market data is missing or malformed, when signals are generated, then the stock receives continue-observing with a data-quality warning.
+- **Planned:** Given market data is stale, when signals are generated, then the stock receives continue-observing with a data-quality warning.
 - Given any required technical condition fails, when signals are generated, then the app reports the failed check and does not emit technical-conditions-ready.
-- Given a calculation throws an exception for one ticker, when the watchlist is processed, then other tickers still receive signals.
-- Given the app detects unknown rule output, when rendering signals, then it shows a safe fallback and logs a diagnostic event.
+- **Planned:** Given a calculation throws an exception for one ticker, when the watchlist is processed, then other tickers still receive signals.
+- **Planned:** Given the app detects unknown rule output, when rendering signals, then it shows a safe fallback and logs a diagnostic event.
 
 Automation target:
 

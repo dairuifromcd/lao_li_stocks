@@ -1,20 +1,3 @@
 # Lao Li Stocks
 
-Pure frontend scaffold for a stock buy-in / add-on price generator.
-
-## Scripts
-
-- `npm install`
-- `npm run dev`
-- `npm run build`
-- `npm run test`
-
-## Directory structure
-
-- `src/` app source (entry: `src/main.ts`, UI shell: `src/app.ts`)
-- `tests/` Vitest tests (unit + UI render)
-- `index.html` Vite entry HTML
-
-## Local API key setup
-
-The Alpha Vantage API key is stored only in the browser `localStorage`. Use the UI panel to save, test, or clear it before data refresh is enabled.
+The canonical project documentation is maintained in [README.md](README.md).

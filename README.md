@@ -8,11 +8,12 @@ This is a decision-support tool. It does not record positions, calculate order s
 
 - The app uses Alpha Vantage `TIME_SERIES_DAILY` with `outputsize=compact`, which is available to free API keys.
 - Displayed prices are the latest complete daily close returned by the provider, not live intraday quotes.
-- The free compact response contains up to 100 daily bars. The app supplements it with split/dividend-adjusted weekly history, caches that history for a week, and uses weekly MA40 as the long-term reference when daily MA120/MA250 are unavailable.
+- The free compact response contains up to 100 daily bars. The app supplements it with split/dividend-adjusted weekly history, caches that history for the current calendar week, and uses weekly MA40 as the long-term reference when daily MA120/MA250 are unavailable.
 - SPY and a sector ETF provide a weekly market-environment filter. A three-month earnings calendar is cached for seven days and blocks a ready signal during the seven days before a known report.
-- Free-tier requests are spaced by at least 1.2 seconds. A burst-limit response receives one delayed retry, while same-day cache hits make no API request.
-- A refresh is capped at 24 requests. Daily calls cover only watchlist stocks; benchmark ETFs use the weekly cache. The current free quota is 25 requests per day, so avoid repeatedly clearing the browser cache or changing the device clock.
+- Free-tier requests are spaced by at least 1.2 seconds. A burst-limit response receives one delayed retry. A same-day daily-cache hit skips that ticker's daily-data call, but stale weekly or earnings-calendar caches can still make supplemental API requests. The refresh button follows these cache rules and does not bypass a same-day daily cache.
+- A refresh is capped at 24 requests. Daily calls cover only watchlist stocks; benchmark ETFs use the weekly cache. Provider quotas are external and may change, so confirm the applicable limit in the Alpha Vantage plan documentation. Avoid repeatedly clearing the browser cache or changing the device clock.
 - Without provider or cached data, prices display as `N/A` and signals remain in continue-observing. The app never generates synthetic market prices.
+- When a refresh fails, the app keeps any existing cache and shows the refresh error. It does not assign a separate stale-data status.
 
 ## Observation Levels
 
@@ -31,6 +32,8 @@ The app stores one signal snapshot per trading day and shows the latest seven da
 
 ## Local Development
 
+Prerequisite: Node.js 18 or Node.js 20+.
+
 ```bash
 npm install
 npm run dev
@@ -43,6 +46,6 @@ npm run test
 npm run build
 ```
 
-The Alpha Vantage API key, watchlist, manual levels, settings, daily/weekly caches, earnings calendar, and signal history are currently stored in browser `localStorage`. Cross-device sync and production deployment are not implemented yet.
+The implementation stores the Alpha Vantage API key, watchlist, manual levels, settings, daily/weekly caches, earnings calendar, and signal history in browser `localStorage`. Cross-device sync and production deployment remain planned.
 
-See [docs/user-stories.md](docs/user-stories.md) for the current acceptance criteria.
+See [docs/user-stories.md](docs/user-stories.md) for acceptance targets and implementation status.
